@@ -1,81 +1,97 @@
-import os
-import time
+import argparse
+import pickle
+import numpy as np
 import pandas as pd
-import joblib
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+from feature_extractor import get_feature_dict
 
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+PHIUSIIL_FEATURE_COLS = [
+    'URLLength','DomainLength','IsDomainIP','URLSimilarityIndex',
+    'CharContinuationRate','TLDLegitimateProb','URLCharProb','TLDLength',
+    'NoOfSubDomain','HasObfuscation','NoOfObfuscatedChar','ObfuscationRatio',
+    'NoOfLettersInURL','LetterRatioInURL','NoOfDegitsInURL','DegitRatioInURL',
+    'NoOfEqualsInURL','NoOfQMarkInURL','NoOfAmpersandInURL',
+    'NoOfOtherSpecialCharsInURL','SpacialCharRatioInURL','IsHTTPS',
+    'LineOfCode','LargestLineLength','HasTitle','DomainTitleMatchScore',
+    'URLTitleMatchScore','HasFavicon','Robots','IsResponsive',
+    'NoOfURLRedirect','NoOfSelfRedirect','HasDescription','NoOfPopup',
+    'NoOfiFrame','HasExternalFormSubmit','HasSocialNet','HasSubmitButton',
+    'HasHiddenFields','HasPasswordField','Bank','Pay','Crypto',
+    'HasCopyrightInfo','NoOfImage','NoOfCSS','NoOfJS','NoOfSelfRef',
+    'NoOfEmptyRef','NoOfExternalRef',
+]
 
-#LOAD DATASET
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH = os.path.join(BASE_DIR, "data", "dataset.csv")
+def load_phiusiil(csv_path):
+    df = pd.read_csv(csv_path)
 
-df = pd.read_csv(DATA_PATH)
+    label_col = None
+    for candidate in ['label','Label','phishing','class','target']:
+        if candidate in df.columns:
+            label_col = candidate
+            break
+    if label_col is None:
+        label_col = df.columns[-1]
 
-print("Dataset loaded successfully")
-print("Dataset Shape:", df.shape)
+    y = df[label_col]
 
+    if y.dtype == object:
+        le = LabelEncoder()
+        y = le.fit_transform(y)
 
-#SEPARATE FEATURES & LABEL
+    feature_cols = [c for c in PHIUSIIL_FEATURE_COLS if c in df.columns]
 
-y = df["label"]
+    X = df.reindex(columns=feature_cols, fill_value=0)
 
-drop_cols = ["label", "URL", "Domain", "FILENAME"]
-X = df.drop(columns=drop_cols)
-
-print("\nInitial feature shape:", X.shape)
-
-
-#REMOVE NON-NUMERIC COLUMNS
-
-non_numeric_cols = X.select_dtypes(include=["object"]).columns
-print("\nNon-numeric columns detected:", list(non_numeric_cols))
-
-X = X.drop(columns=non_numeric_cols)
-
-print("Final feature shape after dropping non-numeric columns:", X.shape)
+    return X.values, np.array(y), feature_cols
 
 
-#TRAIN-TEST SPLIT
+def train(csv_path, output='model.pkl'):
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
-    test_size=0.2,
-    random_state=42,
-    stratify=y
-)
+    X, y, feature_names = load_phiusiil(csv_path)
 
-print("\nTrain set shape:", X_train.shape)
-print("Test set shape:", X_test.shape)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
 
-#TRAIN RANDOM FOREST MODEL
+    from xgboost import XGBClassifier
 
-print("\nTraining Random Forest model...")
+    clf = XGBClassifier(
+        n_estimators=400,
+        max_depth=8,
+        learning_rate=0.05,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        eval_metric="logloss",
+        random_state=42
+    )
 
-start_time = time.time()
+    print("Using XGBoost")
 
-rf_model = RandomForestClassifier(
-    n_estimators=200,
-    class_weight="balanced",
-    random_state=42,
-    n_jobs=-1
-)
+    clf.fit(X_train, y_train)
 
-rf_model.fit(X_train, y_train)
+    y_pred = clf.predict(X_test)
+    y_proba = clf.predict_proba(X_test)[:,1]
 
-end_time = time.time()
+    print(classification_report(y_test, y_pred))
+    print("ROC AUC:", roc_auc_score(y_test, y_proba))
+    print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
 
-print("Training completed")
-print(f"Training time: {end_time - start_time:.2f} seconds")
+    cv_scores = cross_val_score(clf, X, y, cv=5, scoring='roc_auc')
+    print("5-fold CV AUC:", cv_scores.mean())
 
-#SAVE MODEL
+    with open(output, 'wb') as f:
+        pickle.dump({'model': clf, 'feature_names': feature_names}, f)
 
-MODEL_DIR = os.path.join(BASE_DIR, "model")
-os.makedirs(MODEL_DIR, exist_ok=True)
+    print("Model saved to", output)
 
-MODEL_PATH = os.path.join(MODEL_DIR, "phishing_rf_model.pkl")
-joblib.dump(rf_model, MODEL_PATH)
 
-print("\nModel saved successfully at:", MODEL_PATH)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dataset', required=True)
+    parser.add_argument('--output', default='model.pkl')
+
+    args = parser.parse_args()
+
+    train(args.dataset, args.output)
