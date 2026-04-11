@@ -1,13 +1,11 @@
-
 import os
 import pickle
 import numpy as np
 import requests
 from flask import Flask, request, jsonify, render_template
-
 from feature_extractor import get_feature_dict
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='.')
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "model.pkl")
 
@@ -55,6 +53,7 @@ def expand_url(url):
         print("Expansion error:", e)
         return url, 0
 
+
 def rule_based_score(features):
 
     score = 0
@@ -100,7 +99,6 @@ def rule_based_score(features):
     return label, probability, reasons
 
 
-
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -120,10 +118,7 @@ def predict():
     print("Original URL:", url)
     print("Expanded URL:", expanded_url)
 
-    if redirect_count > 0 and expanded_url != url:
-        target_url = expanded_url
-    else:
-        target_url = url
+    target_url = expanded_url if redirect_count > 0 and expanded_url != url else url
 
     features = get_feature_dict(target_url)
 
@@ -136,10 +131,11 @@ def predict():
     else:
         features["RedirectFailure"] = 0
 
+    reasons = []
+
     if model is not None:
         try:
             names = feature_names or list(features.keys())
-
             X = np.array([[features.get(n, 0) for n in names]])
 
             ml_pred = int(model.predict(X)[0])
@@ -179,20 +175,21 @@ def predict():
     }
 
     return jsonify({
-    "url": target_url,
-    "original_url": url,
-    "prediction": pred,
-    "label": "Phishing" if pred else "Legitimate",
-    "phishing_probability": prob_phishing,
-    "confidence": round(abs(prob_phishing - 0.5) * 2, 4),
-    "key_features": key_features,
-    "all_features": features,
-    "reasons": reasons,
-    "source": source
-})
+        "url": target_url,
+        "original_url": url,
+        "prediction": pred,
+        "label": "Phishing" if pred else "Legitimate",
+        "phishing_probability": prob_phishing,
+        "confidence": round(abs(prob_phishing - 0.5) * 2, 4),
+        "key_features": key_features,
+        "all_features": features,
+        "reasons": reasons,
+        "source": source
+    })
 
 
 load_model()
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
